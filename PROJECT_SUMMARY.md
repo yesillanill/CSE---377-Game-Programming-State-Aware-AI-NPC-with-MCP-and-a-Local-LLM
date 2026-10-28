@@ -70,10 +70,15 @@ CSE---377-Game-Programming-State-Aware-AI-NPC-with-MCP-and-a-Local-LLM/
 │   └── requirements.txt                       # Python bağımlılıkları (mcp, ollama, fastapi, uvicorn, pydantic)
 └── UnityClient/
     ├── Assets/
+    │   ├── Prefabs/
+    │   │   ├── GuardNPC.prefab                    # Guard NPC prefab varlığı
+    │   │   ├── EnemyUnit.prefab                   # Düşman birimi prefab varlığı (Instantiate ile çoğaltılır)
+    │   │   └── AllyNPC.prefab                     # Müttefik NPC prefab varlığı (Instantiate ile çoğaltılır)
     │   ├── Scenes/
-    │   │   └── SampleScene.unity              # Taktiksel arena sahnesi (Ground, GuardNPC, Player, Cover, Walls, Camera)
+    │   │   └── SampleScene.unity                  # Taktiksel arena sahnesi (Ground, GuardNPC, Enemy, CoverCube, CoverCubeEast, BackWall, FrontWall, LeftWall, RightWall)
     │   └── Scripts/
-    │       └── GuardNPCController.cs          # State, Legal Actions, Coroutine HTTP, Validation, Executor, Camera, HUD
+    │       ├── GuardNPCController.cs              # State, Legal Actions, Coroutine HTTP, Validation, Executor, Line-of-Sight Damage, HUD
+    │       └── TacticalSceneSetupEditor.cs        # Edit Mode'da sahne duvarlarını ve Prefab referanslarını doğrulayan Editor aracı
     ├── Packages/
     │   └── manifest.json                      # Unity 6 paket tanımları (URP, InputSystem, AI Navigation vb.)
     └── ProjectSettings/                       # Unity 6 (6000.6.3f1) proje ayarları
@@ -229,14 +234,14 @@ Executed Action: RELOAD
   - Kamera parametreleri `GuardNPCController` üzerinde `cameraPosition`, `cameraEulerAngles` ve `cameraFieldOfView` olarak serileştirilmiştir (**Inspector** üzerinden düzenlenebilir).
 
 ### 8.2 Ekran Üstü HUD (On-Screen Debug HUD)
-- `GuardNPCController.OnGUI()` içinde sol üst köşede (`x=14, y=14`), 1080p çözünürlüğe göre dinamik ölçeklenen yüksek kontrastlı yarı saydam bir bilgi paneli çizilir (sol %22'lik alanda yer aldığı için orta alandaki hiçbir oyun nesnesini kapatmaz).
+- `GuardNPCController.OnGUI()` içinde sol üst köşede (`x=14, y=14`), 1080p çözünürlüğe göre dinamik ölçeklenen yüksek kontrastlı yarı saydam bir bilgi paneli çizilir (panel boyutu `440x560 * scale` olarak genişletilmiştir; alt kısımdaki çok satırlı gerekçeler ve kısayol tuşları hiçbir kırpılma olmadan rahatça sığar ve sol %24'lük alanda kaldığı için orta alandaki oyun nesnelerini kapatmaz).
 - **HUD üzerinde gösterilen İngilizce bilgiler**:
   1. **AI Service Status**: `online` / `offline` / `timeout` / `request in flight...`
   2. **Active Scenario & NPC State**: `npcId`, `stateVersion`, `health`, `ammo/maxAmmo`, `enemyCount`, `enemyDistance`, `nearbyAllies`, `coverAvailable`, `nearest_cover_distance`, `objective_under_threat`, `currentAction`
   3. **Current Legal Actions**: O anki geçerli eylem listesi
   4. **Last AI Decision**: Seçilen `action`, `confidence`, `latencyMs`, çağrılan **MCP tools** ve modelin `reason` açıklaması
   5. **Validation Result & Executed Action**: `PASS` / `REJECTED` / `STALE` / `STALE & REJECTED` / `FALLBACK` durumu ve fiilen yürütülen eylem
-  6. **World-Space Labels**: Sahnedeki `Guard`, `Player (Enemy)`, `Cover` ve `Retreat Point` nesnelerinin üzerinde 3B dünyadan 2B ekrana izdüşürülmüş İngilizce etiketler (`F1` tuşu ile **HUD** ve etiketler açılıp kapatılabilir).
+- Oyun görünümünde (**Game view**) nesnelerin üzerindeki dünya uzayı etiketleri kullanıcı isteği doğrultusunda temizlenmiş; tüm durum ve taktiksel bilgiler ekran üstü **HUD** paneli üzerinde düzenli biçimde toplanmıştır (`F1` tuşu ile **HUD** açılıp kapatılabilir).
 
 ---
 
@@ -256,13 +261,12 @@ Executed Action: RELOAD
    - `requestTimeoutSeconds` varsayılan değeri `30` saniyeden şartnamedeki **3 saniyeye** (`3s`) çekildi ve `Start()` içindeki zorunlu `MinRequestTimeoutSeconds = 30` ezmesi kaldırıldı.
    - **Event-Driven Karar Tetikleyicileri (`CheckStateChangeEvents`)**: Siper değişimi (**cover changed**), can değişimi, düşman sayısı değişimi, mermi bitişi (`ammo == 0`), müttefik gelişi, hedef tehdidi değişimi ve hareket tamamlanması (`ExecuteContinuousMovement`) olaylarında `stateVersion` artışı ve otomatik karar isteği eklendi.
    - **Stale State Koruması**: İstek uçuş halindeyken (`isWaitingForDecision`) yeni bir durum oluştuğunda isteğin yutulması hatası `pendingDecisionRequest` kuyruğu ile düzeltildi; `response.stateVersion != currentStateVersion` olan tüm yanıtların `STALE` olarak reddedilmesi sağlandı.
-   - **Kamera, Görsel Kontrast ve HUD**: 55° eğimli sabit taktiksel kamera ayarları (`ApplyCameraConfiguration`), nesne renk kontrastı (`ApplySceneVisualContrast`) ve `F1` ile açılıp kapanabilen İngilizce `OnGUI()` **HUD** + **world-space** etiketleri eklendi.
+   - **Kamera, 4 Duvarlı Simetrik Arena, Dinamik Birimler ve HUD**: 55° eğimli sabit taktiksel kamera ayarları (`ApplyCameraConfiguration`, `pos=(0, 16.5, -12)`), 4 tarafı kapalı tam dikdörtgen arena duvarları (`BackWall`, `FrontWall`, `LeftWall`, `RightWall`), `enemyCount` ve `nearbyAllies` sayılarına göre 3B sahnede dinamik kırmızı düşman ve yeşil/turuncu müttefik kapsülleri oluşturan `SyncSceneUnitsVisuals()` metodu ve `F1` ile açılıp kapanabilen etkileşimli butonlara sahip İngilizce `OnGUI()` **HUD** paneli eklendi.
    - Tüm Türkçe `Debug.Log` mesajları ve kod içi yorumlar İngilizceye çevrildi; Senaryo B'nin `ammo=8` infografik varyantı için `6`/`B` ve siper testi için `C` kısayolları eklendi.
 4. **`UnityClient/Assets/Scenes/SampleScene.unity`**:
-   - `Main Camera` konumu `(0, 14, -9.5)`, rotasyonu `(55, 0, 0)` ve `FOV` değeri `50` olarak güncellendi.
-   - `Enemy` nesnesinin adı `Player` olarak güncellendi (`fileID` referansları korundu).
-   - `RetreatPoint` `(0.28, 0.20, 0.28)` konumundan `(0, 1, -4)` konumuna taşındı.
-   - Sahneye `BackWall`, `LeftWall`, `RightWall` duvar küpleri ve ikinci siper küpü (`CoverCubeEast`) eklendi; `Directional Light` gölge sertliği `0.35`'e düşürüldü.
+   - `Main Camera` konumu `(0, 16.5, -12.0)`, rotasyonu `(55, 0, 0)` ve `FOV` değeri `50` olarak güncellendi.
+   - `RetreatPoint` `(0.28, 0.20, 0.28)` konumundan `(0, 1, -5)` konumuna taşındı.
+   - Sahneye tam simetrik bir dörtgen oluşturan `BackWall`, `FrontWall`, `LeftWall`, `RightWall` duvar küpleri ve ikinci siper küpü (`CoverCubeEast`) eklendi.
 5. **`PythonAgent/requirements.txt` & `README.md`**:
    - Eksik olan `PythonAgent/requirements.txt` oluşturuldu ve `README.md` dosyasına tüm kurulum/çalıştırma adımları İngilizce olarak eklendi.
 
@@ -272,10 +276,11 @@ Executed Action: RELOAD
 
 - **Donanım Kaynaklı LLM Latency Süresi**: Yerel `llama3.1:8b` modeli ile iki aşamalı (**Stage 1 MCP tool calling + Stage 2 JSON Schema output**) karar döngüsü test ortamında ~7.7 sn ile ~19.7 sn arasında sürmektedir. Unity'deki `requestTimeoutSeconds = 3` ayarı şartname gereği ~3 saniyeye ayarlandığından, yavaş CPU/GPU donanımlarında 3 saniye içinde yanıt dönmezse Unity deterministik **fallback** (`TAKE_COVER` veya `HOLD_POSITION`) çalıştırır. Gerçek zamanlı LLM yanıtlarını Unity içinde beklemek için Inspector üzerinden `requestTimeoutSeconds` değeri `20`–`30` saniyeye çıkarılabilir.
 - **Hareket Sistemi (`Vector3.MoveTowards` vs. `NavMesh`)**: Mevcut hareket yürütücüsü (`ExecuteContinuousMovement`) doğrudan `Vector3.MoveTowards` kullanmaktadır; karmaşık engellerin etrafından dolaşmak için Unity `NavMeshAgent` bileşeni opsiyonel olarak eklenebilir.
-- **Unity Editor GUI Etkileşimli Play Mode Testi (`TEST EDİLMEDİ`)**: C# script'leri `dotnet build` ile Unity 6 (`6000.6.3f1`) kütüphanelerine karşı **0 hata ve 0 uyarı** ile derlenmiş, kamera **frustum/occlusion** hesaplamaları matematiksel olarak doğrulanmış ve Python **agent + MCP server** uçtan uca terminalde gerçek **Ollama** üzerinde test edilmiştir; ancak başsız (**headless**) terminal ortamında Unity Editor GUI penceresi açılarak görsel Play Mode tıklama testi **TEST EDİLMEDİ**.
-- **Opsiyonel Geliştirmeler (Gelecek Çalışmalar)**:
-  - **Multiple NPC Personalities**: `NpcState` içine `personality` (`"aggressive"`, `"cautious"`, `"support"`) alanı eklenerek farklı koruma NPC'lerinin aynı durumda farklı taktiksel tercihler yapması sağlanabilir.
-  - **NPC Cooperation**: Birden fazla Guard NPC'nin ortak bir `squad_state` MCP aracı üzerinden birbirlerinin hedef ve eylemlerini görerek koordineli kuşatma veya nöbetleşe şarjör değiştirme (`RELOAD` + `ATTACK`) yapması sağlanabilir.
+- **Tamamlanan Opsiyonel Geliştirmeler (Bölüm 16, Bölüm 17 ve Hasar Sistemi)**:
+  - **Damage System (`TakeDamage`, `UpdateEnemyDamage` & `IsProtectedFromEnemy`)**: `GuardNPCController.TakeDamage(float amount)` metodu, `'H'` tuşu veya HUD üzerindeki `-20 HP (H)` butonu ile anlık `20` hasar verme, düşman `2` metreden yakınken (`enemyDistance < 2.0f`) saniyede `5` yakın mesafe hasarı alma ve sahnede aktif düşman varken (`enemyCount > 0`) periyodik olarak (`2.5` saniyede bir) çatışma hasarı alma özelliği eklendi. **`IsProtectedFromEnemy()`** metodu ile hem `Physics.RaycastAll` (3B fiziksel görüş hattı kontrolü) hem de siper arkası bölge kontrolü (`IsBehindCoverTransform`) yapılarak, NPC bir duvarın veya siperin (`CoverCube` / `CoverCubeEast`) arkasında durduğunda düşman ateşinin engellenmesi ve **0 hasar (`[SHIELDED - 0 DMG]`)** alması sağlandı. Can kritik seviyeye (`health <= 25`) indiğinde veya belirgin azaldığında (`>= 15`) anında `RequestTacticalDecision()` tetiklenir.
+  - **Prefab ve Sahne Mimarisi (`Assets/Prefabs/` & `SampleScene.unity`)**: Duvarların (`BackWall`, `FrontWall`, `LeftWall`, `RightWall`) çalışma zamanında kodla oluşturulması kaldırılarak doğrudan `SampleScene.unity` sahne hiyerarşisine (**Scene Hierarchy**) kalıcı sahne nesneleri olarak eklendi. NPC ve düşman/müttefik birimleri için `Assets/Prefabs/` altında `GuardNPC.prefab`, `EnemyUnit.prefab` ve `AllyNPC.prefab` oluşturuldu; `GuardNPCController` içindeki `enemyPrefab` ve `allyPrefab` referansları üzerinden `Instantiate(...)` ile sahneye eklenmeleri sağlandı.
+  - **Bölüm 16 — Multiple NPC Personalities (`GUARD`, `SCOUT`, `ASSAULT`)**: `NpcRole` (`GUARD`, `SCOUT`, `ASSAULT`) **enum** yapısı ile `NpcState.role` arasında çift yönlü (**bidirectional**) senkronizasyon (`SyncRoleBidirectional` + `OnValidate`), `npc_server.py` içinde rol hedefleri (`tacticalGoal`) ve `get_cooperation_context()` **MCP tool** desteği, `agent.py` içinde kişilik duyarlı **system prompt**, `'R'` kısayol tuşu ve HUD üzerindeki `Role: ... (R)` butonu eklendi.
+  - **Bölüm 17 — Multi-Agent NPC Cooperation (`OnCallForHelpTriggered` & `allyNeedsHelp`)**: `public static event Action<string, Vector3> OnCallForHelpTriggered` C# **event**'i eklendi. Bir NPC `"CALL_FOR_HELP"` yürüttüğünde (veya test için `'J'` tuşuna / HUD butonuna basıldığında) diğer müttefik NPC'ler bu **event**'i dinleyerek kendi `state.allyNeedsHelp = true` alanlarını günceller ve derhal yeni bir taktiksel karar (`RequestTacticalDecision()`) talep eder.
 
 ---
 
@@ -314,6 +319,9 @@ uvicorn agent:app --host 127.0.0.1 --port 8000
    - `3`: **Scenario C – No Ammunition** (`health=70, ammo=0, enemies=1, dist=7, allies=2, cover=true`)
    - `4`: **Scenario D – Outnumbered** (`health=40, ammo=6, enemies=4, dist=8, allies=0, cover=false`)
    - `5`: **Scenario E – Supported Defense** (`health=55, ammo=4, enemies=2, dist=12, allies=3, cover=true`)
+   - `H`: Aktif NPC'ye `20` hasar ver (`TakeDamage(20f)`)
+   - `J`: Manuel `OnCallForHelpTriggered` işbirliği **event**'ini tetikle (`allyNeedsHelp = true`, Bölüm 17)
+   - `R`: NPC kişilik rolünü değiştir (`GUARD -> SCOUT -> ASSAULT`, Bölüm 16)
    - `C`: `coverAvailable` durumunu anlık değiştir (**cover changed** olay tetikleyicisini test eder)
-   - `F1`: Ekran üstü **Debug HUD** ve **world-space** etiketlerini aç/kapat
+   - `F1`: Ekran üstü **Debug HUD** panelini aç/kapat
 

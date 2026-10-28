@@ -1,4 +1,5 @@
 # agent.py
+import os
 import sys
 import time
 import json
@@ -28,6 +29,8 @@ VALID_ACTIONS = {
     "HOLD_POSITION",
 }
 
+VALID_ROLES = {"GUARD", "SCOUT", "ASSAULT"}
+
 REQUIRED_MCP_TOOLS = (
     "get_npc_state",
     "get_legal_actions",
@@ -35,15 +38,22 @@ REQUIRED_MCP_TOOLS = (
 )
 
 SYSTEM_PROMPT = (
-    "You are a guard NPC's tactical brain in a combat game. "
+    "You are a tactical AI NPC brain in a combat game. "
     "Always call get_npc_state, get_legal_actions, and get_environment_context first to inspect the situation, "
     "then choose the single best tactical action from the legal actions.\n"
-    "Evaluate the full tactical context returned by the MCP tools:\n"
-    "- When health is high, ammo is plentiful, and enemy count is low (e.g. 1 enemy), press the advantage with ATTACK.\n"
-    "- When health is critically low, prioritize survival by choosing TAKE_COVER (if legal) or RETREAT.\n"
-    "- When ammo is 0, choose RELOAD so you can fight again.\n"
-    "- When outnumbered with no cover available, choose RETREAT or CALL_FOR_HELP rather than fighting exposed.\n"
-    "- When supported by multiple nearby allies (e.g. nearbyAllies >= 2) with cover available, leverage ally support for a coordinated defense (such as HOLD_POSITION, TAKE_COVER, or ATTACK) and mention the nearby allies in your reason."
+    "Factor the NPC's personality role ('role'), cooperation flag ('allyNeedsHelp'), and state into your decision:\n"
+    "- Role GUARD (Goal: Protect the gate): When health is high, ammo is plentiful, and enemy count is low, press the advantage with ATTACK. "
+    "When health is critically low (<= 25) and not yet in cover, prioritize survival with TAKE_COVER (if legal) or RETREAT.\n"
+    "- Role SCOUT (Goal: Observe enemies and avoid direct combat): Avoid unnecessary firefights; when enemies are close or health drops, "
+    "strongly prefer RETREAT, TAKE_COVER, or CALL_FOR_HELP over ATTACK.\n"
+    "- Role ASSAULT (Goal: Apply aggressive combat pressure): Prioritize ATTACK whenever ATTACK is legal and health is not critical.\n"
+    "- Calling Allies for Help (CALL_FOR_HELP): If the NPC is already in cover (currentAction == 'TAKE_COVER') with low/moderate health (<= 65) "
+    "or facing multiple enemies, do NOT repeat TAKE_COVER; choose CALL_FOR_HELP so allied units come to assist!\n"
+    "- Leaving Cover to Re-engage: If currentAction == 'TAKE_COVER' and health has recovered (> 65) with ammo > 0, leave cover and choose ATTACK.\n"
+    "- Assisting Allies (allyNeedsHelp == true): An ally has requested urgent assistance! Choose ATTACK (if legal) to suppress the enemy threatening the ally "
+    "(or RELOAD if ammo is 0) and explicitly mention assisting the ally in your reason.\n"
+    "- General rules: When ammo is 0, choose RELOAD so you can fight again. When outnumbered with no cover available, choose RETREAT or CALL_FOR_HELP.\n"
+    "Always mention your role (GUARD, SCOUT, or ASSAULT) and key state factors in your one-sentence reason."
 )
 
 app = FastAPI(title="State-Aware NPC Decision Agent")
@@ -54,12 +64,14 @@ decide_lock = asyncio.Lock()        # Serialize access to the shared state.json 
 
 class NpcStateModel(BaseModel):
     npcId: str
+    role: str = "GUARD"
     health: float
     ammo: int
     enemyDistance: float
     enemyCount: int
     nearbyAllies: int
     coverAvailable: bool
+    allyNeedsHelp: bool = False
     currentAction: str
     stateVersion: Optional[int] = None
 
@@ -124,6 +136,7 @@ async def run_decision_loop() -> tuple[dict, list[str], list[str]]:
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(SERVER_SCRIPT)],
+        env={**os.environ, "NPC_STATE_FILE": str(STATE_FILE)},
     )
     tools_called: list[str] = []
     tool_outputs: dict[str, str] = {}
@@ -145,7 +158,7 @@ async def run_decision_loop() -> tuple[dict, list[str], list[str]]:
 
         msgs = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "What should this guard do now?"}
+            {"role": "user", "content": "What should this NPC do now?"}
         ]
 
         # Stage 1: Bounded MCP tool-calling loop (max 4 iterations)
@@ -179,8 +192,8 @@ async def run_decision_loop() -> tuple[dict, list[str], list[str]]:
                     content = f"Tool error: {e}"
                 msgs.append({"role": "tool", "content": content, "tool_name": tool_name})
 
-            # Once all available MCP tools have been inspected, proceed to the final schema-constrained decision
-            if all(t["function"]["name"] in tools_called for t in tools):
+            # Once all core MCP tools have been inspected, proceed to the final schema-constrained decision
+            if all(req_t in tools_called for req_t in REQUIRED_MCP_TOOLS):
                 break
 
         # Safeguard: if the model skipped any required MCP tool, call it now so the decision is never blind
@@ -206,13 +219,49 @@ async def run_decision_loop() -> tuple[dict, list[str], list[str]]:
             }
         }
 
+        try:
+            npc_obs = json.loads(tool_outputs.get("get_npc_state", "{}"))
+        except Exception:
+            npc_obs = {}
+        try:
+            env_obs = json.loads(tool_outputs.get("get_environment_context", "{}"))
+        except Exception:
+            env_obs = {}
+
+        active_role = npc_obs.get("role", "GUARD")
+        active_goal = npc_obs.get("tacticalGoal", "Protect the gate and use tactical cover when threatened.")
+        ally_help = bool(npc_obs.get("allyNeedsHelp", False))
+        current_act = str(npc_obs.get("currentAction", ""))
+        hp_val = float(npc_obs.get("health", 100.0))
+        cover_dist = float(env_obs.get("nearest_cover_distance", 99.0))
+
+        coop_note = ""
+        if ally_help:
+            coop_note += (
+                "URGENT COOPERATION ALERT: allyNeedsHelp is True! An allied NPC called for help; "
+                "choose ATTACK (if legal) to rescue the ally and explicitly mention assisting the ally in your reason.\n"
+            )
+        if current_act == "TAKE_COVER" and cover_dist <= 2.2:
+            if hp_val <= 65.0 and "CALL_FOR_HELP" in legal:
+                coop_note += (
+                    "TACTICAL COVER NOTE: You are ALREADY in cover (currentAction is TAKE_COVER) with reduced health; "
+                    "do NOT repeat TAKE_COVER — choose CALL_FOR_HELP to summon allied reinforcements!\n"
+                )
+            elif hp_val > 65.0 and "ATTACK" in legal:
+                coop_note += (
+                    "TACTICAL COVER NOTE: You are ALREADY in cover and your health is strong; "
+                    "do NOT stay passive in cover — choose ATTACK to step out and engage the enemy!\n"
+                )
+
         final_prompt = (
             "MCP tool observations:\n"
             f"- get_npc_state: {tool_outputs.get('get_npc_state', '{}')}\n"
             f"- get_legal_actions: {json.dumps(legal)}\n"
             f"- get_environment_context: {tool_outputs.get('get_environment_context', '{}')}\n\n"
-            "Based on these observations, choose the single best tactical action from get_legal_actions "
-            "and return your final decision as JSON. Keep the reason to one short sentence citing the key state values."
+            f"ACTIVE PERSONALITY ROLE: {active_role} — Goal: {active_goal}\n"
+            f"{coop_note}"
+            "Based on these MCP observations, choose the single best tactical action from get_legal_actions "
+            f"and return your final decision as JSON. Start your one-sentence reason with 'As a {active_role},' and cite the key state factors."
         )
         final_messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -261,6 +310,10 @@ async def decide_endpoint(req: DecisionRequest):
         try:
             # Write the incoming state snapshot to state.json for the MCP server to read
             payload_dict = req.model_dump()
+            role_norm = str(payload_dict["npc"].get("role", "GUARD")).upper()
+            if role_norm not in VALID_ROLES:
+                role_norm = "GUARD"
+            payload_dict["npc"]["role"] = role_norm
             payload_dict["npc"]["stateVersion"] = req.stateVersion
             with open(STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(payload_dict, f, indent=2)
