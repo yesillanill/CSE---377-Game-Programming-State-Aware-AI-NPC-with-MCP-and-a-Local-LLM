@@ -1,0 +1,1 @@
+# CSE---377-Game-Programming-State-Aware-AI-NPC-with-MCP-and-a-Local-LLM
