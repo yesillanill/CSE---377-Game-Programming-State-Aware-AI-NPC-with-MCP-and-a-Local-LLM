@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-MODEL = "llama3.1:8b"
+MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "state.json"
 SERVER_SCRIPT = BASE_DIR / "npc_server.py"
