@@ -51,7 +51,10 @@ SYSTEM_PROMPT = (
     "or facing multiple enemies, do NOT repeat TAKE_COVER; choose CALL_FOR_HELP so allied units come to assist!\n"
     "- Leaving Cover to Re-engage: If currentAction == 'TAKE_COVER' and health has recovered (> 65) with ammo > 0, leave cover and choose ATTACK.\n"
     "- Assisting Allies (allyNeedsHelp == true): An ally has requested urgent assistance! Choose ATTACK (if legal) to suppress the enemy threatening the ally "
-    "(or RELOAD if ammo is 0) and explicitly mention assisting the ally in your reason.\n"
+    "(or RELOAD if ammo is 0) and explicitly mention assisting the ally in your reason. "
+    "EXCEPTION: if your own health is critical (<= 35), do NOT run into the open; choose CALL_FOR_HELP (if legal) so the other allies advance and "
+    "provide rapid support fire, or TAKE_COVER/RETREAT, and still mention the ally in your reason.\n"
+    "- CALL_FOR_HELP effect: all nearby allies advance next to this NPC and fire at a faster rate for 8 seconds.\n"
     "- General rules: When ammo is 0, choose RELOAD so you can fight again. When outnumbered with no cover available, choose RETREAT or CALL_FOR_HELP.\n"
     "Always mention your role (GUARD, SCOUT, or ASSAULT) and key state factors in your one-sentence reason."
 )
@@ -237,10 +240,17 @@ async def run_decision_loop() -> tuple[dict, list[str], list[str]]:
 
         coop_note = ""
         if ally_help:
-            coop_note += (
-                "URGENT COOPERATION ALERT: allyNeedsHelp is True! An allied NPC called for help; "
-                "choose ATTACK (if legal) to rescue the ally and explicitly mention assisting the ally in your reason.\n"
-            )
+            if hp_val <= 35.0:
+                coop_note += (
+                    f"URGENT COOPERATION ALERT: allyNeedsHelp is True, but your own health is critical ({hp_val:.0f}). "
+                    "Do NOT run into the open: choose CALL_FOR_HELP (if legal) so the other allies advance and support the ally, "
+                    "otherwise TAKE_COVER or RETREAT; explicitly mention the ally in your reason.\n"
+                )
+            else:
+                coop_note += (
+                    "URGENT COOPERATION ALERT: allyNeedsHelp is True! An allied NPC called for help; "
+                    "choose ATTACK (if legal) to rescue the ally and explicitly mention assisting the ally in your reason.\n"
+                )
         if current_act == "TAKE_COVER" and cover_dist <= 2.2:
             if hp_val <= 65.0 and "CALL_FOR_HELP" in legal:
                 coop_note += (
