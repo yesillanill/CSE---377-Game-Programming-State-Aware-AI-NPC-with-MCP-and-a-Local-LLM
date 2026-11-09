@@ -43,12 +43,12 @@ SYSTEM_PROMPT = (
     "then choose the single best tactical action from the legal actions.\n"
     "Factor the NPC's personality role ('role'), cooperation flag ('allyNeedsHelp'), and state into your decision:\n"
     "- Role GUARD (Goal: Protect the gate): When health is high, ammo is plentiful, and enemy count is low, press the advantage with ATTACK. "
-    "When health is critically low (<= 25) and not yet in cover, prioritize survival with TAKE_COVER (if legal) or RETREAT.\n"
-    "- Role SCOUT (Goal: Observe enemies and avoid direct combat): Avoid unnecessary firefights; when enemies are close or health drops, "
+    "When health is low or critical (<= 40) and not yet healed in cover, prioritize survival and regeneration with TAKE_COVER (if legal) or RETREAT.\n"
+    "- Role SCOUT (Goal: Observe enemies and avoid direct combat): Avoid unnecessary firefights; when enemies are close or health drops (<= 55), "
     "strongly prefer RETREAT, TAKE_COVER, or CALL_FOR_HELP over ATTACK.\n"
-    "- Role ASSAULT (Goal: Apply aggressive combat pressure): Prioritize ATTACK whenever ATTACK is legal and health is not critical.\n"
-    "- Calling Allies for Help (CALL_FOR_HELP): If the NPC is already in cover (currentAction == 'TAKE_COVER') with low/moderate health (<= 65) "
-    "or facing multiple enemies, do NOT repeat TAKE_COVER; choose CALL_FOR_HELP so allied units come to assist!\n"
+    "- Role ASSAULT (Goal: Apply aggressive combat pressure): Prioritize ATTACK whenever ATTACK is legal and health is not critical (> 25).\n"
+    "- Cover Recovery & Calling Allies for Help (CALL_FOR_HELP): If the NPC is in cover (currentAction == 'TAKE_COVER') with low/moderate health (<= 65), "
+    "choose CALL_FOR_HELP if CALL_FOR_HELP is in legalActions; otherwise choose TAKE_COVER to stay sheltered in cover while health regenerates!\n"
     "- Leaving Cover to Re-engage: If currentAction == 'TAKE_COVER' and health has recovered (> 65) with ammo > 0, leave cover and choose ATTACK.\n"
     "- Assisting Allies (allyNeedsHelp == true): An ally has requested urgent assistance! Choose ATTACK (if legal) to suppress the enemy threatening the ally "
     "(or RELOAD if ammo is 0) and explicitly mention assisting the ally in your reason. "
@@ -251,13 +251,19 @@ async def run_decision_loop() -> tuple[dict, list[str], list[str]]:
                     "URGENT COOPERATION ALERT: allyNeedsHelp is True! An allied NPC called for help; "
                     "choose ATTACK (if legal) to rescue the ally and explicitly mention assisting the ally in your reason.\n"
                 )
-        if current_act == "TAKE_COVER" and cover_dist <= 2.2:
-            if hp_val <= 65.0 and "CALL_FOR_HELP" in legal:
-                coop_note += (
-                    "TACTICAL COVER NOTE: You are ALREADY in cover (currentAction is TAKE_COVER) with reduced health; "
-                    "do NOT repeat TAKE_COVER — choose CALL_FOR_HELP to summon allied reinforcements!\n"
-                )
-            elif hp_val > 65.0 and "ATTACK" in legal:
+        if current_act == "TAKE_COVER":
+            if hp_val <= 65.0:
+                if cover_dist <= 2.2 and "CALL_FOR_HELP" in legal:
+                    coop_note += (
+                        "TACTICAL COVER NOTE: You are ALREADY in cover (currentAction is TAKE_COVER) with reduced health; "
+                        "do NOT repeat TAKE_COVER — choose CALL_FOR_HELP to summon allied reinforcements!\n"
+                    )
+                elif "TAKE_COVER" in legal:
+                    coop_note += (
+                        "TACTICAL COVER NOTE: Your health is reduced and you are moving to or sheltering in cover; "
+                        "choose TAKE_COVER to stay in cover and regenerate health!\n"
+                    )
+            elif cover_dist <= 2.2 and hp_val > 65.0 and "ATTACK" in legal:
                 coop_note += (
                     "TACTICAL COVER NOTE: You are ALREADY in cover and your health is strong; "
                     "do NOT stay passive in cover — choose ATTACK to step out and engage the enemy!\n"
